@@ -1,0 +1,226 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdbool.h>
+#include <winsock2.h>
+
+#pragma comment(lib, "ws2_32.lib") // Linka a biblioteca Winsock
+
+#define PORT 8080
+#define ROWS 10
+#define COLS 10
+
+// Representação do labirinto
+int maze[ROWS][COLS] = {
+    {2, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {1, 1, 1, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 1, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 1, 1, 1, 1, 1, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 1, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 1, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 1, 1, 1},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 3},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+};
+
+int player_x = 0, player_y = 0; // Posição inicial do jogador
+int dx[] = {-1, 0, 1, 0}; // Movimentos: Cima, Direita, Baixo, Esquerda
+int dy[] = {0, 1, 0, -1};
+int move_codes[] = {1, 2, 3, 4};
+
+// Funções auxiliares
+bool is_valid_move(int x, int y) {
+    return x >= 0 && x < ROWS && y >= 0 && y < COLS &&
+           (maze[x][y] == 1 || maze[x][y] == 3);
+}
+
+// Função para encontrar o caminho da posição atual até a saída usando BFS
+int find_path(int start_x, int start_y, int path[]) {
+    int queue[ROWS * COLS][3]; // Fila para BFS: {x, y, movimento para chegar aqui}
+    int front = 0, rear = 0;
+
+    bool visited[ROWS][COLS] = {0};
+    visited[start_x][start_y] = true;
+
+    queue[rear][0] = start_x;
+    queue[rear][1] = start_y;
+    queue[rear][2] = -1; // Sem movimento inicial
+    rear++;
+
+    int parents[ROWS][COLS][2];
+    memset(parents, -1, sizeof(parents));
+
+    while (front < rear) {
+        int x = queue[front][0];
+        int y = queue[front][1];
+        int move = queue[front][2];
+        front++;
+
+        if (maze[x][y] == 3) {
+            int length = 0;
+            while (move != -1) {
+                path[length++] = move;
+                int px = parents[x][y][0];
+                int py = parents[x][y][1];
+                for (int i = 0; i < 4; i++) {
+                    if (x == px + dx[i] && y == py + dy[i]) {
+                        move = move_codes[i];
+                        break;
+                    }
+                }
+                x = px;
+                y = py;
+            }
+            for (int i = 0; i < length / 2; i++) {
+                int temp = path[i];
+                path[i] = path[length - i - 1];
+                path[length - i - 1] = temp;
+            }
+            return length;
+        }
+
+        for (int i = 0; i < 4; i++) {
+            int nx = x + dx[i];
+            int ny = y + dy[i];
+            if (is_valid_move(nx, ny) && !visited[nx][ny]) {
+                visited[nx][ny] = true;
+                queue[rear][0] = nx;
+                queue[rear][1] = ny;
+                queue[rear][2] = move_codes[i];
+                rear++;
+                parents[nx][ny][0] = x;
+                parents[nx][ny][1] = y;
+            }
+        }
+    }
+    return 0;
+}
+
+// Mostrar o labirinto
+void print_maze(SOCKET client_socket) {
+    char buffer[1024] = "";
+    for (int i = 0; i < ROWS; i++) {
+        for (int j = 0; j < COLS; j++) {
+            char symbol;
+            if (i == player_x && j == player_y) symbol = '+';
+            else if (maze[i][j] == 0) symbol = '#';
+            else if (maze[i][j] == 1) symbol = '_';
+            else if (maze[i][j] == 2) symbol = '>';
+            else if (maze[i][j] == 3) symbol = 'X';
+            else symbol = '?';
+            sprintf(buffer + strlen(buffer), "%c ", symbol);
+        }
+        strcat(buffer, "\n");
+    }
+    send(client_socket, buffer, strlen(buffer), 0);
+}
+
+// Função principal do servidor
+int main() {
+    WSADATA wsaData;
+    SOCKET server_fd, client_socket;
+    struct sockaddr_in address;
+    int opt = 1;
+    int addrlen = sizeof(address);
+
+    // Inicializando o Winsock
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+        printf("Falha ao inicializar o Winsock.\n");
+        return -1;
+    }
+
+    // Criando o socket
+    server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_fd == INVALID_SOCKET) {
+        perror("Erro ao criar o socket");
+        WSACleanup();
+        return -1;
+    }
+
+    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, (const char*)&opt, sizeof(opt));
+
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = INADDR_ANY;
+    address.sin_port = htons(PORT);
+
+    // Ligando o socket
+    if (bind(server_fd, (struct sockaddr*)&address, sizeof(address)) == SOCKET_ERROR) {
+        perror("Erro ao ligar o socket");
+        closesocket(server_fd);
+        WSACleanup();
+        return -1;
+    }
+
+    // Escutando as conexões
+    if (listen(server_fd, 3) == SOCKET_ERROR) {
+        perror("Erro ao escutar");
+        closesocket(server_fd);
+        WSACleanup();
+        return -1;
+    }
+
+    printf("Aguardando conexão...\n");
+
+    // Aceitando a conexão do cliente
+    client_socket = accept(server_fd, (struct sockaddr*)&address, &addrlen);
+    if (client_socket == INVALID_SOCKET) {
+        perror("Erro ao aceitar conexão");
+        closesocket(server_fd);
+        WSACleanup();
+        return -1;
+    }
+
+    send(client_socket, "Bem-vindo ao labirinto!\n", 24, 0);
+    print_maze(client_socket);
+
+    while (1) {
+        int action;
+        recv(client_socket, (char*)&action, sizeof(action), 0);
+
+        switch (action) {
+            case 1: { // Movimento
+                int direction;
+                recv(client_socket, (char*)&direction, sizeof(direction), 0);
+                int nx = player_x + dx[direction - 1];
+                int ny = player_y + dy[direction - 1];
+                if (is_valid_move(nx, ny)) {
+                    player_x = nx;
+                    player_y = ny;
+                    send(client_socket, "Movimento realizado.\n", 21, 0);
+                } else {
+                    send(client_socket, "Movimento inválido.\n", 21, 0);
+                }
+                print_maze(client_socket);
+                break;
+            }
+            case 3: { // Dica
+                int moves[ROWS * COLS] = {0};
+                int path_length = find_path(player_x, player_y, moves);
+                if (path_length > 0) {
+                    char hint_response[1024] = "Dica: Movimentos para chegar à saída: ";
+                    char temp[8];
+                    for (int i = 0; i < path_length; i++) {
+                        sprintf(temp, "%d ", moves[i]);
+                        strcat(hint_response, temp);
+                    }
+                    strcat(hint_response, "\n");
+                    send(client_socket, hint_response, strlen(hint_response), 0);
+                } else {
+                    send(client_socket, "Dica: Nenhum caminho encontrado.\n", 34, 0);
+                }
+                break;
+            }
+            case 7: // Sair
+                send(client_socket, "Saindo do jogo...\n", 19, 0);
+                closesocket(client_socket);
+                WSACleanup();
+				   return 0;
+            default:
+                send(client_socket, "Opção inválida. Tente novamente.\n", 32, 0);
+                break;
+        }
+    }
+    
+    return 0;
+}
